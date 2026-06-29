@@ -12,7 +12,14 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services to the container.
 builder.Services.AddDbContext<ArchiveDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection") ?? "Host=localhost;Database=TerrariaModArchive;Username=postgres;Password=postgres"));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection") ?? "Host=localhost;Database=TerrariaModArchive;Username=postgres;Password=postgres",
+    npgsqlOptionsAction: sqlOptions =>
+    {
+        sqlOptions.EnableRetryOnFailure(
+            maxRetryCount: 10,
+            maxRetryDelay: TimeSpan.FromSeconds(30),
+            errorCodesToAdd: null);
+    }));
 
 builder.Services.AddSingleton<IStorageService, LocalDiskStorageService>();
 
@@ -58,7 +65,7 @@ app.UseHttpsRedirection();
 app.UseAuthentication();
 app.UseAuthorization();
 
-app.MapPost("/token", (string username, string password, IConfiguration config) =>
+app.MapPost("/token", ([FromBody] TokenRequest req, IConfiguration config) =>
 {
     var validUsername = config["AdminCredentials:Username"];
     var validPassword = config["AdminCredentials:Password"];
@@ -69,11 +76,11 @@ app.MapPost("/token", (string username, string password, IConfiguration config) 
         return Results.StatusCode(500);
     }
 
-    if (username == validUsername && password == validPassword)
+    if (req.Username == validUsername && req.Password == validPassword)
     {
         var claims = new[]
         {
-            new Claim(JwtRegisteredClaimNames.Sub, username),
+            new Claim(JwtRegisteredClaimNames.Sub, req.Username),
             new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
         };
 
@@ -96,6 +103,31 @@ app.MapPost("/token", (string username, string password, IConfiguration config) 
 
     return Results.Unauthorized();
 });
+
+app.MapPost("/mods/track", async ([FromBody] TrackRequest req, ArchiveDbContext db) =>
+{
+    if (string.IsNullOrWhiteSpace(req.SteamId))
+    {
+        return Results.BadRequest("SteamId is required.");
+    }
+
+    var exists = await db.Mods.AnyAsync(m => m.SteamId == req.SteamId);
+    if (!exists)
+    {
+        var mod = new TerrariaModArchive.Core.Models.Mod
+        {
+            SteamId = req.SteamId,
+            Title = "Manually Tracked Mod (Pending Download)",
+            Description = "Waiting for background scraper to process..."
+        };
+        db.Mods.Add(mod);
+        await db.SaveChangesAsync();
+
+        return Results.Ok($"Mod {req.SteamId} is now being tracked. It will be downloaded during the next scraper cycle.");
+    }
+
+    return Results.Ok($"Mod {req.SteamId} is already tracked.");
+}).RequireAuthorization();
 
 app.MapGet("/mods", async ([FromQuery] int? page, [FromQuery] int? pageSize, [FromQuery] string? search, ArchiveDbContext db) =>
 {
@@ -174,3 +206,6 @@ app.MapGet("/mods/{id}/versions/{version}/download", async (int id, string versi
 }).RequireAuthorization();
 
 app.Run();
+
+public record TokenRequest(string Username, string Password);
+public record TrackRequest(string SteamId);

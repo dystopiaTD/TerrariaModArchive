@@ -51,7 +51,7 @@ public class SteamWorkshopScraperWorker : BackgroundService
                 var allModsToProcess = new Dictionary<string, string>(); // SteamId -> Title
 
                 // 1. Get Top 200 items (2 pages of 100)
-                for (int page = 0; page < 2; page++)
+                for (int page = 1; page <= 2; page++)
                 {
                     // IPublishedFileService/QueryFiles - query_type=1 (ranked by trend), numperpage=100
                     var queryUrl = $"https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/?appid={TModLoaderAppId}&query_type=1&page={page}&numperpage=100&return_short_description=true";
@@ -177,10 +177,16 @@ public class SteamWorkshopScraperWorker : BackgroundService
             mod = new Mod
             {
                 SteamId = workshopId,
-                Title = title,
+                Title = !string.IsNullOrEmpty(metadata.Name) ? metadata.Name : title,
                 Description = "Auto-imported from Steam Workshop",
             };
             dbContext.Mods.Add(mod);
+            await dbContext.SaveChangesAsync(cancellationToken);
+        }
+        else if (mod.Title.Contains("Pending Download"))
+        {
+            // If it was manually tracked, update the title to the internal tmod name
+            mod.Title = !string.IsNullOrEmpty(metadata.Name) ? metadata.Name : title;
             await dbContext.SaveChangesAsync(cancellationToken);
         }
 

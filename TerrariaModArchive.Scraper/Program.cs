@@ -9,7 +9,14 @@ using TerrariaModArchive.Scraper.Workers;
 var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddDbContext<ArchiveDbContext>(options =>
-    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection") ?? "Host=localhost;Database=TerrariaModArchive;Username=postgres;Password=postgres"));
+    options.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection") ?? "Host=localhost;Database=TerrariaModArchive;Username=postgres;Password=postgres",
+    npgsqlOptionsAction: sqlOptions =>
+    {
+        sqlOptions.EnableRetryOnFailure(
+            maxRetryCount: 10,
+            maxRetryDelay: TimeSpan.FromSeconds(30),
+            errorCodesToAdd: null);
+    }));
 
 builder.Services.AddSingleton<IStorageService, LocalDiskStorageService>();
 builder.Services.AddSingleton<SteamCmdSetupService>();
