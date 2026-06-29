@@ -1,0 +1,6 @@
+@TerrariaModArchive.Api_HostAddress = http://localhost:5039
+
+GET {{TerrariaModArchive.Api_HostAddress}}/weatherforecast/
+Accept: application/json
+
+###

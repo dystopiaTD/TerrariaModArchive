@@ -1,0 +1,43 @@
+version: '3.8'
+
+services:
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgrespassword
+      POSTGRES_DB: TerrariaModArchive
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  api:
+    build:
+      context: .
+      dockerfile: TerrariaModArchive.Api/Dockerfile
+    environment:
+      - ConnectionStrings__DefaultConnection=Host=db;Database=TerrariaModArchive;Username=postgres;Password=postgrespassword
+      - Storage__LocalPath=/app/storage
+    ports:
+      - "8080:8080"
+    volumes:
+      - mod_storage:/app/storage
+    depends_on:
+      - db
+
+  scraper:
+    build:
+      context: .
+      dockerfile: TerrariaModArchive.Scraper/Dockerfile
+    environment:
+      - ConnectionStrings__DefaultConnection=Host=db;Database=TerrariaModArchive;Username=postgres;Password=postgrespassword
+      - Storage__LocalPath=/app/storage
+    volumes:
+      - mod_storage:/app/storage
+    depends_on:
+      - db
+
+volumes:
+  pgdata:
+  mod_storage:

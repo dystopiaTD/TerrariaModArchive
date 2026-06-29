@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="TerrariaModArchive.Api/TerrariaModArchive.Api.csproj" />
+  <Project Path="TerrariaModArchive.Core/TerrariaModArchive.Core.csproj" />
+  <Project Path="TerrariaModArchive.Scraper/TerrariaModArchive.Scraper.csproj" />
+</Solution>
