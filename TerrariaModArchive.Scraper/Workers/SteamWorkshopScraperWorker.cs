@@ -48,35 +48,63 @@ public class SteamWorkshopScraperWorker : BackgroundService
             try
             {
                 var client = new HttpClient();
+                var allModsToProcess = new Dictionary<string, string>(); // SteamId -> Title
 
-                // IPublishedFileService/QueryFiles - gets popular items. We just get 10 for the demo.
-                var queryUrl = $"https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/?appid={TModLoaderAppId}&query_type=1&numperpage=10&return_short_description=true";
-                var response = await client.GetAsync(queryUrl, stoppingToken);
-
-                if (response.IsSuccessStatusCode)
+                // 1. Get Top 200 items (2 pages of 100)
+                for (int page = 0; page < 2; page++)
                 {
-                    var content = await response.Content.ReadAsStringAsync(stoppingToken);
-                    using var jsonDocument = JsonDocument.Parse(content);
+                    // IPublishedFileService/QueryFiles - query_type=1 (ranked by trend), numperpage=100
+                    var queryUrl = $"https://api.steampowered.com/IPublishedFileService/QueryFiles/v1/?appid={TModLoaderAppId}&query_type=1&page={page}&numperpage=100&return_short_description=true";
+                    var response = await client.GetAsync(queryUrl, stoppingToken);
 
-                    var root = jsonDocument.RootElement;
-                    if (root.TryGetProperty("response", out var responseElement) &&
-                        responseElement.TryGetProperty("publishedfiledetails", out var files))
+                    if (response.IsSuccessStatusCode)
                     {
-                        foreach (var file in files.EnumerateArray())
-                        {
-                            var workshopId = file.GetProperty("publishedfileid").GetString();
-                            var title = file.GetProperty("title").GetString();
+                        var content = await response.Content.ReadAsStringAsync(stoppingToken);
+                        using var jsonDocument = JsonDocument.Parse(content);
 
-                            if (!string.IsNullOrEmpty(workshopId) && !string.IsNullOrEmpty(title))
+                        var root = jsonDocument.RootElement;
+                        if (root.TryGetProperty("response", out var responseElement) &&
+                            responseElement.TryGetProperty("publishedfiledetails", out var files))
+                        {
+                            foreach (var file in files.EnumerateArray())
                             {
-                                await ProcessModAsync(workshopId, title, stoppingToken);
+                                var workshopId = file.GetProperty("publishedfileid").GetString();
+                                var title = file.GetProperty("title").GetString();
+
+                                if (!string.IsNullOrEmpty(workshopId) && !string.IsNullOrEmpty(title))
+                                {
+                                    allModsToProcess[workshopId] = title;
+                                }
                             }
                         }
                     }
+                    else
+                    {
+                        _logger.LogWarning("Failed to query Steam Workshop API. Status code: {StatusCode}", response.StatusCode);
+                    }
                 }
-                else
+
+                // 2. Add historically tracked mods from DB
+                using (var scope = _serviceProvider.CreateScope())
                 {
-                    _logger.LogWarning("Failed to query Steam Workshop API. Status code: {StatusCode}", response.StatusCode);
+                    var dbContext = scope.ServiceProvider.GetRequiredService<ArchiveDbContext>();
+                    var trackedMods = dbContext.Mods.Select(m => new { m.SteamId, m.Title }).ToList();
+
+                    foreach (var trackedMod in trackedMods)
+                    {
+                        if (!allModsToProcess.ContainsKey(trackedMod.SteamId))
+                        {
+                            allModsToProcess[trackedMod.SteamId] = trackedMod.Title;
+                        }
+                    }
+                }
+
+                _logger.LogInformation("Found {Count} total mods to process (Top 200 + Tracked).", allModsToProcess.Count);
+
+                // 3. Process all mods
+                foreach (var modItem in allModsToProcess)
+                {
+                    await ProcessModAsync(modItem.Key, modItem.Value, stoppingToken);
                 }
             }
             catch (Exception ex)
@@ -183,6 +211,20 @@ public class SteamWorkshopScraperWorker : BackgroundService
         else
         {
             _logger.LogInformation("Version {Version} for {Title} already exists.", metadata.Version, title);
+        }
+
+        // 5. Cleanup SteamCMD cache to save disk space
+        try
+        {
+            if (Directory.Exists(workshopContentDir))
+            {
+                Directory.Delete(workshopContentDir, recursive: true);
+                _logger.LogDebug("Cleaned up SteamCMD cache directory: {Path}", workshopContentDir);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to clean up SteamCMD cache directory: {Path}", workshopContentDir);
         }
     }
 }

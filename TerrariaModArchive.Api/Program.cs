@@ -1,7 +1,11 @@
 using Microsoft.EntityFrameworkCore;
 using TerrariaModArchive.Core.Data;
 
+using System.IdentityModel.Tokens.Jwt;
+using System.Security.Claims;
+using System.Text;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.IdentityModel.Tokens;
 using TerrariaModArchive.Core.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -12,9 +16,31 @@ builder.Services.AddDbContext<ArchiveDbContext>(options =>
 
 builder.Services.AddSingleton<IStorageService, LocalDiskStorageService>();
 
+// Add Output Caching
+builder.Services.AddOutputCache();
+
+// Add Auth
+var jwtKey = builder.Configuration["Jwt:Key"] ?? throw new InvalidOperationException("Jwt:Key is not configured.");
+builder.Services.AddAuthentication("Bearer").AddJwtBearer(options =>
+{
+    options.TokenValidationParameters = new TokenValidationParameters
+    {
+        ValidateIssuer = true,
+        ValidateAudience = true,
+        ValidateLifetime = true,
+        ValidateIssuerSigningKey = true,
+        ValidIssuer = "TerrariaModArchive",
+        ValidAudience = "TerrariaModArchive",
+        IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKey))
+    };
+});
+builder.Services.AddAuthorization();
+
 builder.Services.AddOpenApi();
 
 var app = builder.Build();
+
+app.UseOutputCache();
 
 using (var scope = app.Services.CreateScope())
 {
@@ -28,6 +54,48 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseHttpsRedirection();
+
+app.UseAuthentication();
+app.UseAuthorization();
+
+app.MapPost("/token", (string username, string password, IConfiguration config) =>
+{
+    var validUsername = config["AdminCredentials:Username"];
+    var validPassword = config["AdminCredentials:Password"];
+    var jwtKeyStr = config["Jwt:Key"];
+
+    if (string.IsNullOrEmpty(validUsername) || string.IsNullOrEmpty(validPassword) || string.IsNullOrEmpty(jwtKeyStr))
+    {
+        return Results.StatusCode(500);
+    }
+
+    if (username == validUsername && password == validPassword)
+    {
+        var claims = new[]
+        {
+            new Claim(JwtRegisteredClaimNames.Sub, username),
+            new Claim(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString())
+        };
+
+        var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(jwtKeyStr));
+        var creds = new SigningCredentials(key, SecurityAlgorithms.HmacSha256);
+
+        var token = new JwtSecurityToken(
+            issuer: "TerrariaModArchive",
+            audience: "TerrariaModArchive",
+            claims: claims,
+            expires: DateTime.Now.AddHours(2),
+            signingCredentials: creds
+        );
+
+        return Results.Ok(new
+        {
+            token = new JwtSecurityTokenHandler().WriteToken(token)
+        });
+    }
+
+    return Results.Unauthorized();
+});
 
 app.MapGet("/mods", async ([FromQuery] int? page, [FromQuery] int? pageSize, [FromQuery] string? search, ArchiveDbContext db) =>
 {
@@ -51,7 +119,7 @@ app.MapGet("/mods", async ([FromQuery] int? page, [FromQuery] int? pageSize, [Fr
         .ToListAsync();
 
     return Results.Ok(new { TotalItems = totalItems, Page = p, PageSize = ps, Items = mods });
-});
+}).CacheOutput(x => x.Expire(TimeSpan.FromMinutes(5)));
 
 app.MapGet("/mods/{id}", async (int id, ArchiveDbContext db) =>
 {
@@ -60,7 +128,7 @@ app.MapGet("/mods/{id}", async (int id, ArchiveDbContext db) =>
         .FirstOrDefaultAsync(m => m.Id == id);
 
     return mod is not null ? Results.Ok(mod) : Results.NotFound();
-});
+}).CacheOutput(x => x.Expire(TimeSpan.FromMinutes(5)));
 
 app.MapGet("/mods/{id}/versions", async (int id, ArchiveDbContext db) =>
 {
@@ -71,7 +139,7 @@ app.MapGet("/mods/{id}/versions", async (int id, ArchiveDbContext db) =>
         .ToListAsync();
 
     return Results.Ok(versions);
-});
+}).CacheOutput(x => x.Expire(TimeSpan.FromMinutes(5)));
 
 app.MapGet("/mods/{id}/versions/latest/download", async (int id, ArchiveDbContext db, IStorageService storage) =>
 {
@@ -88,7 +156,7 @@ app.MapGet("/mods/{id}/versions/latest/download", async (int id, ArchiveDbContex
         return Results.NotFound("File not found on storage.");
 
     return Results.File(stream, "application/octet-stream", $"{id}_{latestVersion.Version}.tmod");
-});
+}).RequireAuthorization();
 
 app.MapGet("/mods/{id}/versions/{version}/download", async (int id, string version, ArchiveDbContext db, IStorageService storage) =>
 {
@@ -103,6 +171,6 @@ app.MapGet("/mods/{id}/versions/{version}/download", async (int id, string versi
         return Results.NotFound("File not found on storage.");
 
     return Results.File(stream, "application/octet-stream", $"{id}_{version}.tmod");
-});
+}).RequireAuthorization();
 
 app.Run();
